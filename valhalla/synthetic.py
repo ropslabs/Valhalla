@@ -5,8 +5,9 @@ Three scenarios (see README):
 * ORGANIC — many independent wallets, each funded from its own external source (or a
   CEX hot wallet), diverse buy/hold/sell behaviour.
 * WASH    — the threat model: a market-making bot. A few wallets, all funded from ONE
-  operator (itself funded by the deployer), trading back and forth; barely any new holders.
-* MIXED   — an organic base with a bot overlay on the same token.
+  operator (itself funded by the deployer), trading back and forth; barely any new holders,
+  plus spike buyers lured by the fake volume who sell out within hours.
+* MIXED   — an organic base with a bot overlay (and some spike buyers) on the same token.
 
 Every dataset carries a ``GroundTruth`` per token so tests can check the detector's
 estimates against what was actually generated.
@@ -134,6 +135,27 @@ def _organic_actors(
     return transfers, trades, wallets
 
 
+def _flippers(
+    rng: random.Random, token: TokenId, n: int, start: int, span: int
+) -> tuple[list[Transfer], list[Trade], set[Wallet]]:
+    """Independent spike buyers lured by (fake) volume: they buy once and sell out a few
+    hours later — outside the wash window, so organic by volume, but not retained."""
+    transfers: list[Transfer] = []
+    trades: list[Trade] = []
+    wallets: set[Wallet] = set()
+    for i in range(n):
+        w = f"{token}:flip{i}"
+        wallets.add(w)
+        fund_ts = start + rng.randrange(span)
+        funder = CEX_HOT_WALLET if rng.random() < 0.3 else f"{token}:flipsrc{i}"
+        transfers.append(Transfer(funder, w, round(rng.uniform(0.5, 5.0), 4), fund_ts))
+        t = fund_ts + int(rng.expovariate(1 / (2 * HOUR)))
+        amount = round(rng.lognormvariate(0.0, 0.8), 6)
+        trades.append(Trade(w, token, Side.BUY, amount, t))
+        trades.append(Trade(w, token, Side.SELL, amount, t + rng.randint(2 * HOUR, 12 * HOUR)))
+    return transfers, trades, wallets
+
+
 def _bot_operation(
     rng: random.Random,
     token: TokenId,
@@ -236,6 +258,7 @@ def wash_scenario(
     span: int = 7 * DAY,
     deployer_funds_operator: bool = True,
     layering: int = 0,
+    n_flippers: int = 15,
 ) -> Dataset:
     rng = random.Random(f"wash:{seed}")
     deployer, deployer_funding = _deployer(rng, token, start)
@@ -244,7 +267,10 @@ def wash_scenario(
     )
     o_transfers, o_trades, org = _organic_actors(rng, token, n_organic, start, span, 0.3, 0.0)
     transfers = [deployer_funding, *b_transfers, *o_transfers, *_cex_background(rng, token, 80, start, span)]
-    return _finish(token, ScenarioKind.WASH, deployer, transfers, (o_trades, org), (b_trades, bots))
+    # drawn last so the rest of the scenario is unchanged by the flipper count
+    f_transfers, f_trades, flippers = _flippers(rng, token, n_flippers, start, span)
+    transfers += f_transfers
+    return _finish(token, ScenarioKind.WASH, deployer, transfers, (o_trades + f_trades, org | flippers), (b_trades, bots))
 
 
 def mixed_scenario(
@@ -257,6 +283,7 @@ def mixed_scenario(
     span: int = 7 * DAY,
     deployer_funds_operator: bool = False,
     layering: int = 1,
+    n_flippers: int = 20,
 ) -> Dataset:
     rng = random.Random(f"mixed:{seed}")
     deployer, deployer_funding = _deployer(rng, token, start)
@@ -265,7 +292,9 @@ def mixed_scenario(
         rng, token, deployer, n_bots, n_rounds, start, span, deployer_funds_operator, layering
     )
     transfers = [deployer_funding, *o_transfers, *b_transfers, *_cex_background(rng, token, 80, start, span)]
-    return _finish(token, ScenarioKind.MIXED, deployer, transfers, (o_trades, org), (b_trades, bots))
+    f_transfers, f_trades, flippers = _flippers(rng, token, n_flippers, start, span)
+    transfers += f_transfers
+    return _finish(token, ScenarioKind.MIXED, deployer, transfers, (o_trades + f_trades, org | flippers), (b_trades, bots))
 
 
 _BUILDERS = {

@@ -47,6 +47,31 @@ class DetectorConfig:
     """A cluster counts as a net new buyer if its net position exceeds this fraction
     of what it bought (and the dust threshold)."""
 
+    # --- token signals (all measured per cluster, never per wallet) -----------
+    signal_window: int = 1 * DAY
+    """Time bucket for the new-buyer series, age normalization and retention horizon."""
+
+    concentration_top_n: int = 10
+    """Holder concentration = share of the top-N clusters in the total position."""
+
+    retention_windows: int = 3
+    """A buyer cluster is retained if it still holds a meaningful position this many
+    ``signal_window``s after its first buy (meaningful: see ``net_buyer_min_ratio``)."""
+
+    retention_prior: float = 0.5
+    """Retention used in the score when no buyer cluster is old enough to judge."""
+
+    new_buyers_scale: float = 10.0
+    """New independent buyers per ``signal_window`` at which that score component is 0.5
+    (component = rate / (rate + scale))."""
+
+    weight_new_buyers: float = 0.3
+    weight_retention: float = 0.3
+    weight_concentration: float = 0.2
+    weight_wash: float = 0.2
+    """organic_score = w_new * new_buyers + w_ret * retention + w_conc * (1 - concentration)
+    - w_wash * wash_fraction. Placeholders until calibrated on labelled real data."""
+
     def __post_init__(self) -> None:
         if not isinstance(self.known_hubs, frozenset):
             object.__setattr__(self, "known_hubs", frozenset(self.known_hubs))
@@ -64,6 +89,19 @@ class DetectorConfig:
             raise ValueError("round_trip_window must be >= 0")
         if not 0 <= self.net_buyer_min_ratio < 1:
             raise ValueError("net_buyer_min_ratio must be in [0, 1)")
+        if self.signal_window <= 0:
+            raise ValueError("signal_window must be > 0")
+        if self.concentration_top_n < 1:
+            raise ValueError("concentration_top_n must be >= 1")
+        if self.retention_windows < 1:
+            raise ValueError("retention_windows must be >= 1")
+        if not 0 <= self.retention_prior <= 1:
+            raise ValueError("retention_prior must be in [0, 1]")
+        if self.new_buyers_scale <= 0:
+            raise ValueError("new_buyers_scale must be > 0")
+        weights = (self.weight_new_buyers, self.weight_retention, self.weight_concentration, self.weight_wash)
+        if any(w < 0 for w in weights):
+            raise ValueError("score weights must be >= 0")
 
 
 DEFAULT_CONFIG = DetectorConfig()
